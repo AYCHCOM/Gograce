@@ -60,6 +60,7 @@ type listener struct {
 	closed      bool
 	closedMutex sync.RWMutex
 	wg          sync.WaitGroup
+	active      chan bool
 }
 
 type deadliner interface {
@@ -69,18 +70,21 @@ type deadliner interface {
 // Allows for us to notice when the connection is closed.
 type conn struct {
 	net.Conn
-	wg   *sync.WaitGroup
-	once sync.Once
+	wg     *sync.WaitGroup
+	once   sync.Once
+	active chan bool
 }
 
 func (c *conn) Close() error {
 	defer c.once.Do(c.wg.Done)
-	return c.Conn.Close()
+	err := c.Conn.Close()
+	<-c.active
+	return err
 }
 
 // Wraps an existing File listener to provide a graceful Close() process.
-func NewListener(l Listener) Listener {
-	return &listener{Listener: l}
+func NewListener(maxActive int, l Listener) Listener {
+	return &listener{Listener: l, active: make(chan bool, maxActive)}
 }
 
 func (l *listener) Close() error {
@@ -118,6 +122,8 @@ func (l *listener) Accept() (net.Conn, error) {
 		}
 	}()
 
+	l.active <- true
+
 	l.closedMutex.RLock()
 	if l.closed {
 		l.closedMutex.RUnlock()
@@ -127,6 +133,8 @@ func (l *listener) Accept() (net.Conn, error) {
 
 	c, err := l.Listener.Accept()
 	if err != nil {
+		<-l.active
+
 		if strings.HasSuffix(err.Error(), errClosed) {
 			return nil, ErrAlreadyClosed
 		}
@@ -144,7 +152,7 @@ func (l *listener) Accept() (net.Conn, error) {
 		}
 		return nil, err
 	}
-	return &conn{Conn: c, wg: &l.wg}, nil
+	return &conn{Conn: c, wg: &l.wg, active: l.active}, nil
 }
 
 type Process struct {
@@ -186,7 +194,7 @@ func (p *Process) Wait(listeners []Listener) (err error) {
 }
 
 // Try to inherit listeners from the parent process.
-func (p *Process) Inherit() (listeners []Listener, err error) {
+func (p *Process) Inherit(maxActive int) (listeners []Listener, err error) {
 	countStr := os.Getenv(envCountKey)
 	if countStr == "" {
 		return nil, ErrNotInheriting
@@ -204,7 +212,7 @@ func (p *Process) Inherit() (listeners []Listener, err error) {
 			return nil, err
 		}
 		l := tmp.(Listener)
-		listeners = append(listeners, NewListener(l))
+		listeners = append(listeners, NewListener(maxActive, l))
 	}
 	return
 }
@@ -275,8 +283,8 @@ func Wait(listeners []Listener) (err error) {
 }
 
 // Try to inherit listeners from the parent process.
-func Inherit() (listeners []Listener, err error) {
-	return defaultProcess.Inherit()
+func Inherit(maxActive int) (listeners []Listener, err error) {
+	return defaultProcess.Inherit(maxActive)
 }
 
 // Start the Close process in the parent. This does not wait for the

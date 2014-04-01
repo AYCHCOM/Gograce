@@ -32,17 +32,17 @@ type App struct {
 // Listen will inherit or create new listeners. Returns a bool indicating if we
 // inherited listeners. This return value is useful in order to decide if we
 // should instruct the parent process to terminate.
-func (a *App) Listen() (bool, error) {
+func (a *App) Listen(maxActive int) (bool, error) {
 	var err error
 	a.errors = make(chan error, len(a.Servers))
-	a.listeners, err = grace.Inherit()
+	a.listeners, err = grace.Inherit(maxActive)
 	if err == nil {
 		if len(a.Servers) != len(a.listeners) {
 			return true, errListenersCount
 		}
 		return true, nil
 	} else if err == grace.ErrNotInheriting {
-		if a.listeners, err = a.newListeners(); err != nil {
+		if a.listeners, err = a.newListeners(maxActive); err != nil {
 			return false, err
 		}
 		return false, nil
@@ -51,7 +51,7 @@ func (a *App) Listen() (bool, error) {
 }
 
 // Creates new listeners (as in not inheriting) for all the configured Servers.
-func (a *App) newListeners() ([]grace.Listener, error) {
+func (a *App) newListeners(maxActive int) ([]grace.Listener, error) {
 	listeners := make([]grace.Listener, len(a.Servers))
 	for index, server := range a.Servers {
 		addr, err := net.ResolveTCPAddr("tcp", server.Addr)
@@ -62,7 +62,7 @@ func (a *App) newListeners() ([]grace.Listener, error) {
 		if err != nil {
 			return nil, fmt.Errorf("net.ListenTCP %s: %s", server.Addr, err)
 		}
-		listeners[index] = grace.NewListener(l)
+		listeners[index] = grace.NewListener(maxActive, l)
 	}
 	return listeners, nil
 }
@@ -103,9 +103,9 @@ func (a *App) Wait() error {
 
 // Serve will serve the given http.Servers and will monitor for signals
 // allowing for graceful termination (SIGTERM) or restart (SIGUSR2).
-func Serve(servers ...*http.Server) error {
+func Serve(maxActive int, servers ...*http.Server) error {
 	app := &App{Servers: servers}
-	inherited, err := app.Listen()
+	inherited, err := app.Listen(maxActive)
 	if err != nil {
 		return err
 	}
