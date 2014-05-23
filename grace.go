@@ -35,6 +35,10 @@ var (
 	// SIGUSR1 signal. The normal use case for SIGUSR1 is to repon the
 	// log files.
 	OnSIGUSR1 func()
+
+	// KeepWorkingDirectory defines if we keep the same working directory
+	// across USR2 reloads. Default is to keep the same working directory.
+	KeepWorkingDirectory = true
 )
 
 const (
@@ -244,9 +248,12 @@ func (p *Process) Restart(listeners []Listener) (err error) {
 	}
 
 	// In order to keep the working directory the same as when we started.
-	wd, err := os.Getwd()
-	if err != nil {
-		return err
+	var wd string
+	if KeepWorkingDirectory {
+		wd, err = os.Getwd()
+		if err != nil {
+			return err
+		}
 	}
 
 	// Pass on the environment and replace the old count key with the new one.
